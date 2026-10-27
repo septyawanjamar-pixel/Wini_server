@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monitoring Input Wire</title>
+<link rel="icon" href="data:,">
+<style>
+/* =====================================================================
+   Website monitoring INPUT wire - data dari /api/monitor, real-time dari /api/events
+   Fokus: hasil input dari aplikasi + posisi mana yang terisi / kosong.
+   Tidak memakai library luar: jalan di jaringan pabrik tanpa internet.
+   ===================================================================== */
+:root {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-2: #232321;
+  --border: rgba(255,255,255,0.10);
+  --text-1: #f0efec;
+  --text-2: #c3c2b7;
+  --muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --s1: #3987e5; --s2: #d95926;
+  --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+  --kosong-bg: transparent; --kosong-bd: rgba(12,163,12,0.45); --kosong-tx: #5fb85f;
+  --isi-bg: rgba(208,59,59,0.28);    --isi-bd: rgba(208,59,59,0.85);    --isi-tx: #ffb0b0;
+  --focus: #3987e5;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-2: #f0efec;
+  --border: rgba(11,11,11,0.10);
+  --text-1: #0b0b0b;
+  --text-2: #52514e;
+  --muted: #6f6d68;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --s1: #2a78d6; --s2: #eb6834;
+  --kosong-bg: transparent; --kosong-bd: rgba(12,163,12,0.45); --kosong-tx: #2f7a2f;
+  --isi-bg: rgba(208,59,59,0.16);    --isi-bd: rgba(208,59,59,0.75);    --isi-tx: #9e2020;
+  --focus: #2a78d6;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--page); color: var(--text-1);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; min-height: 100vh;
+}
+button, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* ---------- header ---------- */
+header {
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 12px 20px; background: var(--surface); border-bottom: 1px solid var(--border);
+}
+header h1 { margin: 0; font-size: 18px; font-weight: 700; }
+header .sub { color: var(--muted); font-size: 12px; }
+.spacer { flex: 1; }
+.live { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+.live i { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.live.on i { background: var(--good); }
+.live.off i { background: var(--critical); }
+.ctl { display: flex; gap: 8px; align-items: center; }
+.ctl label { font-size: 12px; color: var(--muted); }
+select, .btn {
+  height: 34px; padding: 0 10px; border-radius: 8px; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--border);
+}
+.btn:hover, select:hover { border-color: var(--muted); }
+.btn.danger { background: var(--critical); border-color: var(--critical); color: #fff; font-weight: 700; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ---------- layout ---------- */
+main { padding: 16px 20px 32px; display: grid; gap: 16px; }
+.kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.row2 { display: grid; gap: 16px; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
+@media (max-width: 1200px) { .row2 { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 720px) {
+  header { padding: 10px 16px; }
+  main { padding: 12px 16px 24px; }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.card h2 { margin: 0 0 2px; font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-2); }
+.card .hint { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+.card-head { display: flex; align-items: flex-start; gap: 12px; }
+.card-head > div:first-child { flex: 1; min-width: 0; }
+
+/* KPI */
+.kpi .lbl { font-size: 12px; color: var(--text-2); letter-spacing: .04em; text-transform: uppercase; }
+.kpi .val { font-size: 34px; font-weight: 700; line-height: 1.15; margin-top: 4px; }
+.kpi .val small { font-size: 15px; font-weight: 600; color: var(--text-2); margin-left: 4px; }
+.kpi .note { font-size: 12px; color: var(--muted); margin-top: 2px; min-height: 17px; }
+.kpi .note.bad { color: var(--text-1); }
+.kpi .note.bad::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--critical); margin-right: 6px; }
+
+/* ---------- posisi ---------- */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-2); margin: 0 0 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 14px; border-radius: 4px; display: inline-block; }
+.legend i.k { background: var(--kosong-bg); border: 1px solid var(--kosong-bd); }
+.legend i.t { background: var(--isi-bg); border: 1px solid var(--isi-bd); }
+.legend i.l { background: var(--critical); }
+.areas { display: grid; gap: 14px; }
+.area h3 { margin: 0 0 6px; font-size: 14px; font-weight: 700; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.area h3 span { font-size: 12px; font-weight: 500; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  width: 46px; height: 46px; border-radius: 8px; border: 1px solid; padding: 0;
+  display: grid; place-items: center; align-content: center; gap: 0; line-height: 1.05;
+  font-variant-numeric: tabular-nums; cursor: default;
+}
+.chip b { font-size: 15px; }
+.chip span { font-size: 10px; font-weight: 600; max-width: 42px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip.k { background: var(--kosong-bg); border-color: var(--kosong-bd); color: var(--kosong-tx); font-weight: 500; }
+.chip.k b { font-weight: 500; }
+.chip.t { background: var(--isi-bg); border-color: var(--isi-bd); color: var(--isi-tx); cursor: pointer; }
+.chip.t:hover { border-width: 2px; }
+.chip.l { background: var(--critical); border-color: var(--critical); color: #fff; cursor: pointer; }
+.chip.baru { animation: baru 3s ease-out; }
+@keyframes baru { 0%, 40% { box-shadow: 0 0 0 4px var(--focus); } 100% { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .chip.baru { animation: none; outline: 2px solid var(--focus); } }
+
+/* ---------- tabel ---------- */
+.tbl-wrap { overflow: auto; max-height: 460px; border-radius: 8px; border: 1px solid var(--border); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { position: sticky; top: 0; background: var(--surface-2); color: var(--text-2); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; z-index: 1; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.mono { font-family: ui-monospace, Consolas, monospace; font-weight: 600; }
+td.dim { color: var(--muted); }
+tr.flash td { animation: flash 2.5s ease-out; }
+@keyframes flash { from { background: rgba(57,135,229,.35); } }
+.st { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.st::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--dot, var(--muted)); }
+.st.in { --dot: var(--critical); color: var(--text-1); }
+.st.out { --dot: var(--good); color: var(--muted); }
+.empty { padding: 32px 8px; text-align: center; color: var(--muted); font-size: 13px; }
+
+/* chart */
+.chart { position: relative; width: 100%; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.tabs { display: inline-flex; gap: 2px; padding: 2px; background: var(--surface-2); border-radius: 8px; border: 1px solid var(--border); }
+.tabs button { border: 0; background: none; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text-2); }
+.tabs button[aria-pressed="true"] { background: var(--surface); color: var(--text-1); font-weight: 700; }
+
+/* tooltip, toast, dialog */
+#tip {
+  position: fixed; z-index: 50; pointer-events: none; display: none; background: var(--surface); color: var(--text-1);
+  border: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,.35); border-radius: 8px; padding: 8px 10px; font-size: 12px; max-width: 280px;
+}
+#tip b { display: block; margin-bottom: 2px; }
+#tip .r { display: flex; gap: 8px; align-items: center; color: var(--text-2); }
+#tip .r i { width: 8px; height: 8px; border-radius: 2px; }
+#tip .r span:last-child { margin-left: auto; color: var(--text-1); font-weight: 700; font-variant-numeric: tabular-nums; }
+#toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: grid; gap: 8px; width: min(360px, calc(100vw - 32px)); }
+.toast {
+  background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--critical);
+  border-radius: 10px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.35); font-size: 13px;
+}
+.toast.out { border-left-color: var(--good); }
+.toast.db { border-left-color: var(--s1); }
+.toast b { display: block; }
+.toast span { color: var(--text-2); font-size: 12px; }
+dialog {
+  border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text-1);
+  padding: 18px 20px; width: min(400px, calc(100vw - 32px));
+}
+dialog::backdrop { background: rgba(0,0,0,.55); }
+dialog h3 { margin: 0 0 10px; font-size: 16px; }
+dialog dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0 0 14px; font-size: 13px; }
+dialog dt { color: var(--muted); }
+dialog dd { margin: 0; font-weight: 600; }
+dialog .warn { font-size: 13px; color: var(--isi-tx); margin: 0 0 8px; font-weight: 600; }
+dialog label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+dialog select { width: 100%; margin-bottom: 14px; }
+dialog .act { display: flex; gap: 8px; justify-content: flex-end; }
+dialog .err { color: var(--isi-tx); font-size: 12px; min-height: 16px; margin: 0 0 8px; }
+.banner { display: none; padding: 10px 14px; border-radius: 10px; background: var(--isi-bg); border: 1px solid var(--isi-bd); }
+.foot { color: var(--muted); font-size: 12px; text-align: right; }
+
+/* ---------- MODE TV (/?tv=1): KPI + posisi saja, huruf besar ---------- */
+body.tv .hide-tv { display: none !important; }
+body.tv header h1 { font-size: 24px; }
+body.tv .kpi .val { font-size: 44px; }
+body.tv .kpi .lbl, body.tv .kpi .note { font-size: 15px; }
+body.tv .area h3 { font-size: 20px; }
+body.tv .area h3 span { font-size: 15px; }
+body.tv .chip { width: 66px; height: 66px; }
+body.tv .chip b { font-size: 22px; }
+body.tv .chip span { font-size: 13px; max-width: 60px; }
+body.tv .legend { font-size: 15px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Monitoring Input Wire</h1>
+    <div class="sub" id="subtitle">Hasil input dari aplikasi · posisi terisi &amp; kosong</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="ctl">
+    <label for="fArea">Area</label>
+    <select id="fArea"><option value="">Semua area</option></select>
+  </div>
+  <button class="btn" id="btnTv" type="button" aria-pressed="false">Mode TV</button>
+  <button class="btn" id="btnTheme" type="button" aria-label="Ganti tema terang/gelap">Tema</button>
+  <div class="live" id="live" role="status"><i></i><span>Menghubungkan…</span></div>
+</header>
+
+<main>
+  <div class="banner" id="banner">Server tidak terjangkau. Pastikan <b>npm start</b> masih jalan di PC server. Mencoba lagi otomatis…</div>
+
+  <section class="kpis" aria-label="Ringkasan">
+    <div class="card kpi"><div class="lbl">Posisi terisi</div><div class="val" id="kIsi">–</div><div class="note" id="kIsiN"></div></div>
+    <div class="card kpi"><div class="lbl">Posisi kosong</div><div class="val" id="kKosong">–</div><div class="note" id="kKosongN"></div></div>
+    <div class="card kpi"><div class="lbl">Input hari ini</div><div class="val" id="kInput">–</div><div class="note" id="kInputN"></div></div>
+    <div class="card kpi"><div class="lbl">Lewat lead time</div><div class="val" id="kLewat">–</div><div class="note" id="kLewatN"></div></div>
+  </section>
+
+  <section class="card">
+    <h2>Posisi wire</h2>
+    <p class="hint hide-tv">Warna sama dengan aplikasi. Klik posisi merah untuk melihat isinya atau mengosongkan.</p>
+    <div class="legend">
+      <span><i class="k"></i>Kosong</span>
+      <span><i class="t"></i>Terisi</span>
+      <span><i class="l"></i>Terisi &gt; lead time</span>
+    </div>
+    <div class="areas" id="areas"></div>
+  </section>
+
+  <section class="row2 hide-tv">
+    <div class="card">
+      <h2>Input terbaru</h2>
+      <p class="hint">30 input terakhir dari aplikasi</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Waktu</th><th>Area</th><th class="num">Posisi</th><th>Grade</th><th>QR</th><th>Status</th></tr></thead>
+          <tbody id="tInput"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>WIP harian</h2>
+          <p class="hint" id="wipHint">Jumlah lot IN di akhir tiap hari</p>
+        </div>
+        <div class="tabs" role="group" aria-label="Tampilan WIP harian">
+          <button type="button" data-v="wip" aria-pressed="true">Stok WIP</button>
+          <button type="button" data-v="io" aria-pressed="false">Masuk / keluar</button>
+        </div>
+      </div>
+      <div class="legend" id="lgWip"></div>
+      <div class="chart" id="chWip"></div>
+    </div>
+  </section>
+
+  <div class="foot" id="foot"></div>
+</main>
+
+<dialog id="dlg">
+  <h3 id="dTitle">Posisi</h3>
+  <dl id="dInfo"></dl>
+  <p class="warn" id="dWarn" hidden>Lot ini sudah lewat lead time, pilih alasan dulu.</p>
+  <div id="dAlasanBox" hidden>
+    <label for="dAlasan">Alasan keluar lead time</label>
+    <select id="dAlasan"></select>
+  </div>
+  <p class="warn" id="dWarnTs" hidden>Lot ini bukan urutan pertama (FIFO) di area &amp; grade-nya, pilih alasan tidak sesuai.</p>
+  <div id="dTsBox" hidden>
+    <label for="dTs">Alasan tidak sesuai</label>
+    <select id="dTs"></select>
+  </div>
+  <p class="err" id="dErr"></p>
+  <div class="act">
+    <button class="btn" type="button" id="dTutup">Tutup</button>
+    <button class="btn danger" type="button" id="dKosong">Kosongkan posisi</button>
+  </div>
+</dialog>
+
+<div id="tip" role="tooltip"></div>
+<div id="toasts" aria-live="polite"></div>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const fmtTgl = (d) => { if (!d) return '–'; const [, m, dd] = String(d).slice(0, 10).split('-'); return `${dd}/${m}`; };
+const fmtTglPanjang = (d) => d ? new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) : '–';
+
+const state = { area: '', data: null, wipView: 'wip', prevInput: new Set(), baru: new Set(), alasan: [], tidakSesuai: [] };
+try {
+  state.area = localStorage.getItem('mon.area') || '';
+  const t = localStorage.getItem('mon.theme'); if (t) document.documentElement.dataset.theme = t;
+} catch {}
+
+/* ---------- SVG & tooltip helpers ---------- */
+const NS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs = {}, parent) {
+  const n = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null) n.setAttribute(k, v);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+function svgBox(container, h) {
+  container.innerHTML = '';
+  const w = Math.max(container.clientWidth, 200);
+  const svg = el('svg', { viewBox: `0 0 ${w} ${h}`, height: h }, container);
+  return { svg, w, h };
+}
+function niceMax(v, minTop = 4) {
+  v = Math.max(v, minTop);
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+function yAxis(svg, x0, x1, y0, y1, max, ticks = 4) {
+  const pilih = [ticks, 5, 4, 3, 2].find((t) => Number.isInteger(max / t)) || ticks;
+  ticks = max <= ticks ? max : pilih;
+  for (let i = 0; i <= ticks; i++) {
+    const v = (max / ticks) * i;
+    const y = y0 - (v / max) * (y0 - y1);
+    el('line', { x1: x0, x2: x1, y1: y, y2: y, stroke: i === 0 ? css('--axis') : css('--grid'), 'stroke-width': 1 }, svg);
+    const t = el('text', { x: x0 - 6, y: y + 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--muted') }, svg);
+    t.textContent = Math.round(v * 10) / 10;
+  }
+}
+function barPath(x, y, w, h, r = 4) {
+  if (h <= 0) return '';
+  r = Math.min(r, w / 2, h);
+  return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}z`;
+}
+const tip = $('tip');
+function showTip(ev, html) {
+  tip.innerHTML = html; tip.style.display = 'block';
+  const pad = 14, r = tip.getBoundingClientRect();
+  let x = ev.clientX + pad, y = ev.clientY + pad;
+  if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - pad;
+  if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - pad;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+const hideTip = () => { tip.style.display = 'none'; };
+
+/* ---------- KPI ---------- */
+function renderKpi(d) {
+  const p = d.posisi_ringkas || { total: 0, terisi: 0, kosong: 0 };
+  const k = d.kpi;
+  const note = (id, text, lv = '') => { const n = $(id); n.textContent = text; n.className = 'note ' + lv; };
+  $('kIsi').innerHTML = `${p.terisi}<small>/ ${p.total}</small>`;
+  note('kIsiN', p.total ? `${Math.round((p.terisi / p.total) * 100)}% rak terpakai` : 'Belum ada posisi');
+  $('kKosong').textContent = p.kosong;
+  note('kKosongN', 'Siap diisi');
+  $('kInput').textContent = k.input_hari_ini;
+  note('kInputN', fmtTglPanjang(k.hari_ini));
+  $('kLewat').innerHTML = `${k.wip_lewat}<small>lot</small>`;
+  note('kLewatN', k.wip_lewat ? 'Perlu segera dikeluarkan' : 'Semua masih dalam lead time', k.wip_lewat ? 'bad' : '');
+}
+
+/* ---------- posisi per area ---------- */
+function renderAreas(d) {
+  const box = $('areas');
+  const list = d.peta_posisi || [];
+  $('fArea').innerHTML = '<option value="">Semua area</option>' +
+    d.status_area.map((a) => `<option value="${a.area_id}"${String(a.area_id) === state.area ? ' selected' : ''}>${esc(a.area)}</option>`).join('');
+  if (!list.length) { box.innerHTML = '<div class="empty">Belum ada area</div>'; return; }
+  box.innerHTML = '';
+  for (const a of list) {
+    const wrap = document.createElement('div'); wrap.className = 'area';
+    const kosong = a.jumlah - a.terisi;
+    wrap.innerHTML = `<h3>${esc(a.area)}<span>${a.terisi} terisi · ${kosong} kosong</span></h3>`;
+    const chips = document.createElement('div'); chips.className = 'chips';
+    for (const sl of a.slot) {
+      const lot = [...sl.lots].sort((x, y) => (y.stagnasi ?? 0) - (x.stagnasi ?? 0))[0];
+      const b = document.createElement('button');
+      b.type = 'button';
+      if (!lot) {
+        b.className = 'chip k';
+        b.innerHTML = `<b>${sl.nomor}</b>`;
+        b.setAttribute('aria-label', `${a.area} posisi ${sl.nomor} kosong`);
+        b.tabIndex = -1;
+      } else {
+        const lewat = sl.lots.some((l) => l.status_lead === 'lewat');
+        b.className = 'chip ' + (lewat ? 'l' : 't') + (state.baru.has(lot.qr_id) ? ' baru' : '');
+        b.innerHTML = `<b>${sl.nomor}</b><span>${esc(lot.grade)}${sl.dobel ? ' +' : ''}</span>`;
+        b.setAttribute('aria-label', `${a.area} posisi ${sl.nomor} terisi grade ${lot.grade}, ${lot.stagnasi} hari`);
+        b.addEventListener('pointermove', (e) => showTip(e, `<b>Posisi ${sl.nomor} · ${esc(a.area)}</b>` + sl.lots.map((l) => `
+          <div class="r"><span>${esc(l.qr_id)}</span><span>${esc(l.grade)}</span></div>
+          <div class="r"><span>Sudah</span><span>${l.stagnasi} / ${l.lead_time_hari} hari</span></div>`).join('')));
+        b.addEventListener('pointerleave', hideTip);
+        b.onclick = () => bukaDialog(a, sl, lot);
+      }
+      chips.appendChild(b);
+    }
+    wrap.appendChild(chips);
+    box.appendChild(wrap);
+  }
+  state.baru.clear();
+}
+
+/* ---------- input terbaru ---------- */
+function renderInput(list) {
+  const tb = $('tInput');
+  if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">Belum ada input</td></tr>'; return; }
+  const ids = new Set(list.map((r) => r.qr_id + r.waktu));
+  tb.innerHTML = list.map((r) => {
+    const baru = state.prevInput.size && !state.prevInput.has(r.qr_id + r.waktu);
+    const st = r.status === 'IN' ? `<span class="st in">Terisi · ${r.stagnasi} hari</span>` : `<span class="st out">Sudah dikosongkan</span>`;
+    return `<tr class="${baru ? 'flash' : ''}">
+      <td class="dim">${fmtTgl(r.waktu)} ${String(r.waktu).slice(11, 16)}</td>
+      <td>${esc(r.area)}</td><td class="num"><b>${r.posisi_wire ?? '–'}</b></td><td>${esc(r.grade)}</td>
+      <td class="mono">${esc(r.qr_id)}</td><td>${st}</td></tr>`;
+  }).join('');
+  state.prevInput = ids;
+}
+
+/* ---------- WIP harian (grafik yang sama dengan versi sebelumnya) ---------- */
+function renderWip(d) {
+  const box = $('chWip');
+  const rows = d.wip_harian;
+  const io = state.wipView === 'io';
+  $('wipHint').textContent = io ? 'Jumlah lot masuk dan keluar per hari' : 'Jumlah lot IN di akhir tiap hari';
+  $('lgWip').innerHTML = io
+    ? `<span><i style="background:var(--s1)"></i>Masuk (input)</span><span><i style="background:var(--s2)"></i>Keluar (output)</span>`
+    : `<span><i style="background:var(--s1)"></i>Stok WIP</span>`;
+  if (!rows.length) { box.innerHTML = '<div class="empty">Belum ada data</div>'; return; }
+
+  const H = 260, m = { t: 14, r: 56, b: 28, l: 36 };
+  const { svg, w } = svgBox(box, H);
+  const y0 = H - m.b, y1 = m.t;
+  const n = rows.length;
+  const step = Math.max(1, Math.ceil(n / Math.floor((w - m.l) / 48)));
+  const cw = (w - m.l - m.r) / n;
+  const xc = (i) => m.l + i * cw + cw / 2;
+
+  if (io) {
+    const max = niceMax(Math.max(...rows.map((r) => Math.max(r.masuk, r.keluar))));
+    yAxis(svg, m.l, w - m.r, y0, y1, max, 4);
+    const bw = Math.max(2, Math.min(14, (cw - 6) / 2));
+    rows.forEach((r, i) => {
+      const hM = (r.masuk / max) * (y0 - y1), hK = (r.keluar / max) * (y0 - y1);
+      el('path', { d: barPath(xc(i) - bw - 1, y0 - hM, bw, hM), fill: css('--s1') }, svg);
+      el('path', { d: barPath(xc(i) + 1, y0 - hK, bw, hK), fill: css('--s2') }, svg);
+    });
+  } else {
+    const max = niceMax(Math.max(...rows.map((r) => r.wip)) * 1.1);
+    yAxis(svg, m.l, w - m.r, y0, y1, max, 4);
+    const ys = (v) => y0 - (v / max) * (y0 - y1);
+    const pts = rows.map((r, i) => `${xc(i)},${ys(r.wip)}`);
+    const grad = el('linearGradient', { id: 'gw', x1: 0, x2: 0, y1: 0, y2: 1 }, el('defs', {}, svg));
+    el('stop', { offset: 0, 'stop-color': css('--s1'), 'stop-opacity': .35 }, grad);
+    el('stop', { offset: 1, 'stop-color': css('--s1'), 'stop-opacity': .02 }, grad);
+    el('path', { d: `M${xc(0)},${y0}L${pts.join('L')}L${xc(n - 1)},${y0}Z`, fill: 'url(#gw)' }, svg);
+    el('polyline', { points: pts.join(' '), fill: 'none', stroke: css('--s1'), 'stroke-width': 2, 'stroke-linejoin': 'round' }, svg);
+    const last = rows[n - 1];
+    el('circle', { cx: xc(n - 1), cy: ys(last.wip), r: 4.5, fill: css('--s1'), stroke: css('--surface'), 'stroke-width': 2 }, svg);
+    const lv = el('text', { x: xc(n - 1) + 8, y: ys(last.wip) - 8, 'font-size': 12, 'font-weight': 700, fill: css('--text-1') }, svg);
+    lv.textContent = last.wip;
+  }
+  rows.forEach((r, i) => {
+    if (i % step === 0) {
+      const t = el('text', { x: xc(i), y: y0 + 16, 'text-anchor': 'middle', 'font-size': 11, fill: css('--muted') }, svg);
+      t.textContent = fmtTgl(r.tanggal);
+    }
+  });
+  // crosshair + tooltip
+  const cross = el('line', { y1: y1, y2: y0, stroke: css('--muted'), 'stroke-width': 1, opacity: 0 }, svg);
+  const hit = el('rect', { x: m.l, y: y1, width: w - m.l - m.r, height: y0 - y1, fill: 'transparent' }, svg);
+  hit.addEventListener('pointermove', (e) => {
+    const r0 = svg.getBoundingClientRect();
+    const px = (e.clientX - r0.left) * (w / r0.width);
+    const i = Math.max(0, Math.min(n - 1, Math.floor((px - m.l) / cw)));
+    const r = rows[i];
+    cross.setAttribute('x1', xc(i)); cross.setAttribute('x2', xc(i)); cross.setAttribute('opacity', 1);
+    showTip(e, `<b>${fmtTglPanjang(r.tanggal)}</b>
+      <div class="r"><i style="background:var(--s1)"></i><span>Stok WIP</span><span>${r.wip}</span></div>
+      <div class="r"><i style="background:var(--s1)"></i><span>Masuk</span><span>${r.masuk}</span></div>
+      <div class="r"><i style="background:var(--s2)"></i><span>Keluar</span><span>${r.keluar}</span></div>`);
+  });
+  hit.addEventListener('pointerleave', () => { cross.setAttribute('opacity', 0); hideTip(); });
+}
+
+/* ---------- dialog kosongkan posisi ---------- */
+const dlg = $('dlg');
+let dlgLot = null;
+async function muatMaster() {
+  try {
+    if (!state.alasan.length) state.alasan = (await (await fetch('/api/alasan')).json()).data || [];
+    if (!state.tidakSesuai.length) state.tidakSesuai = (await (await fetch('/api/tidak_sesuai')).json()).data || [];
+  } catch {}
+}
+const nama = (s) => esc(String(s ?? '').replace(/_/g, ' '));
+/** Tampilkan pilihan alasan lead time / alasan tidak sesuai (sama aturannya dengan backend & aplikasi). */
+function tampilPilihan(perluAlasan, perluTs) {
+  $('dWarn').hidden = !perluAlasan;
+  $('dAlasanBox').hidden = !perluAlasan;
+  if (perluAlasan && !$('dAlasan').options.length) {
+    $('dAlasan').innerHTML = '<option value="">Pilih alasan…</option>' +
+      state.alasan.map((x) => `<option value="${x.id}">${nama(x.alasan)}</option>`).join('');
+  }
+  $('dWarnTs').hidden = !perluTs;
+  $('dTsBox').hidden = !perluTs;
+  if (perluTs && !$('dTs').options.length) {
+    $('dTs').innerHTML = '<option value="">Pilih alasan…</option>' +
+      state.tidakSesuai.map((x) => `<option value="${x.id}">${nama(x.alasan_tidaksesuai)}</option>`).join('');
+  }
+}
+async function bukaDialog(a, sl, lot) {
+  dlgLot = { ...lot, area: a.area, posisi: sl.nomor };
+  const lewat = lot.status_lead === 'lewat';
+  $('dTitle').textContent = `${a.area} · Posisi ${sl.nomor}`;
+  $('dInfo').innerHTML = `
+    <dt>QR</dt><dd style="font-family:ui-monospace,Consolas,monospace">${esc(lot.qr_id)}</dd>
+    <dt>Grade</dt><dd>${esc(lot.grade)}</dd>
+    <dt>Sudah</dt><dd>${lot.stagnasi} hari${lewat ? ` (lewat ${lot.lead_time_hari} hari)` : ''}</dd>
+    <dt>Lead time</dt><dd>${lot.lead_time_hari} hari</dd>
+    ${sl.dobel ? `<dt>Catatan</dt><dd>${sl.lots.length} lot di posisi ini</dd>` : ''}`;
+  $('dErr').textContent = '';
+  $('dKosong').disabled = false;
+  $('dAlasan').innerHTML = ''; $('dTs').innerHTML = '';
+  await muatMaster();
+  tampilPilihan(lewat, (lot.urutan ?? 1) > 1);
+  dlg.showModal();
+}
+$('dTutup').onclick = () => dlg.close();
+$('dKosong').onclick = async () => {
+  if (!dlgLot) return;
+  const perluAlasan = !$('dAlasanBox').hidden, perluTs = !$('dTsBox').hidden;
+  const alasan = $('dAlasan').value, ts = $('dTs').value;
+  if (perluAlasan && !alasan) { $('dErr').textContent = 'Pilih alasan keluar lead time dulu.'; return; }
+  if (perluTs && !ts) { $('dErr').textContent = 'Pilih alasan tidak sesuai dulu.'; return; }
+  $('dKosong').disabled = true;
+  try {
+    const r = await fetch('/api/scan/output', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        qr_id: dlgLot.qr_id,
+        alasan: perluAlasan ? Number(alasan) : null,
+        tidak_sesuai: perluTs ? Number(ts) : null,
+      }),
+    });
+    const j = await r.json();
+    if (!j.success) {
+      // data berubah sejak dialog dibuka (hari berganti / lot lain masuk) -> tampilkan pilihan yang diminta server
+      if (j.perlu_alasan || j.perlu_tidak_sesuai) tampilPilihan(perluAlasan || !!j.perlu_alasan, perluTs || !!j.perlu_tidak_sesuai);
+      throw new Error(j.message || 'Gagal');
+    }
+    dlg.close();
+    load();
+  } catch (e) {
+    $('dErr').textContent = e.message;
+    $('dKosong').disabled = false;
+  }
+};
+
+/* ---------- load & real-time ---------- */
+function renderAll() {
+  const d = state.data; if (!d) return;
+  renderKpi(d);
+  renderAreas(d);
+  renderInput(d.input_terbaru || []);
+  renderWip(d);
+  const nm = d.status_area.find((a) => String(a.area_id) === state.area);
+  $('subtitle').textContent = `${nm ? nm.area : 'Semua area'} · ${fmtTglPanjang(d.kpi.hari_ini)} · hari ini ${d.kpi.input_hari_ini} input`;
+  $('foot').textContent = 'Diperbarui ' + new Date().toLocaleTimeString('id-ID');
+}
+let loading = false, again = false;
+async function load() {
+  if (loading) { again = true; return; }
+  loading = true;
+  try {
+    const q = new URLSearchParams({ hari: '30' });
+    if (state.area) q.set('area', state.area);
+    const j = await (await fetch('/api/monitor?' + q)).json();
+    if (!j.success) throw new Error(j.message || 'gagal');
+    state.data = j.data;
+    $('banner').style.display = 'none';
+    renderAll();
+  } catch { $('banner').style.display = 'block'; }
+  finally { loading = false; if (again) { again = false; load(); } }
+}
+let tmr; const reload = () => { clearTimeout(tmr); tmr = setTimeout(load, 250); };
+function toast(cls, title, body) {
+  const t = document.createElement('div');
+  t.className = 'toast ' + cls;
+  t.innerHTML = `<b>${esc(title)}</b><span>${esc(body)}</span>`;
+  $('toasts').prepend(t);
+  while ($('toasts').children.length > 4) $('toasts').lastChild.remove();
+  setTimeout(() => t.remove(), 7000);
+}
+function setLive(on, text) { const l = $('live'); l.className = 'live ' + (on ? 'on' : 'off'); l.querySelector('span').textContent = text; }
+function connect() {
+  const es = new EventSource('/api/events');
+  es.onopen = () => { setLive(true, 'Live'); load(); };
+  es.onerror = () => setLive(false, 'Terputus, mencoba lagi…');
+  const parse = (e) => { try { return JSON.parse(e.data); } catch { return {}; } };
+  es.addEventListener('scan_input', (e) => {
+    const r = parse(e); if (r.qr_id) state.baru.add(r.qr_id);
+    toast('in', `INPUT · ${r.area || ''} posisi ${r.posisi_wire ?? ''}`, `${r.qr_id || ''} · Grade ${r.grade || ''}`); reload();
+  });
+  es.addEventListener('scan_output', (e) => {
+    const r = parse(e); toast('out', `Dikosongkan · ${r.area || ''} posisi ${r.posisi_wire ?? ''}`, r.qr_id || ''); reload();
+  });
+  es.addEventListener('lead_time_lewat', () => reload());
+  es.addEventListener('db_change', () => { toast('db', 'Data diubah dari DBeaver', 'Tampilan diperbarui'); reload(); });
+}
+
+function setArea(v) { state.area = v; try { localStorage.setItem('mon.area', v); } catch {} load(); }
+$('fArea').onchange = (e) => setArea(e.target.value);
+function setTv(on) {
+  document.body.classList.toggle('tv', on);
+  $('btnTv').setAttribute('aria-pressed', String(on));
+  $('btnTv').textContent = on ? 'Mode lengkap' : 'Mode TV';
+  const u = new URL(location.href);
+  if (on) u.searchParams.set('tv', '1'); else u.searchParams.delete('tv');
+  history.replaceState(null, '', u);
+  renderAll();
+}
+$('btnTv').onclick = () => setTv(!document.body.classList.contains('tv'));
+if (new URLSearchParams(location.search).get('tv') === '1') { document.body.classList.add('tv'); $('btnTv').setAttribute('aria-pressed', 'true'); $('btnTv').textContent = 'Mode lengkap'; }
+$('btnTheme').onclick = () => {
+  const cur = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = cur;
+  try { localStorage.setItem('mon.theme', cur); } catch {}
+  renderAll();
+};
+document.querySelectorAll('.tabs button').forEach((b) => {
+  b.onclick = () => {
+    state.wipView = b.dataset.v;
+    document.querySelectorAll('.tabs button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    if (state.data) renderWip(state.data);
+  };
+});
+let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(renderAll, 150); });
+
+load();
+connect();
+setInterval(load, 60000); // hari berganti -> lama "sudah X hari" ikut bertambah
+</script>
+</body>
+</html>
